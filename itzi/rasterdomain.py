@@ -1,6 +1,6 @@
 # coding=utf8
 """
-Copyright (C) 2016-2020 Laurent Courty
+Copyright (C) 2016-2017 Laurent Courty
 
 This program is free software; you can redistribute it and/or
 modify it under the terms of the GNU General Public License
@@ -15,14 +15,17 @@ GNU General Public License for more details.
 
 from __future__ import division
 from __future__ import absolute_import
-from datetime import datetime
+from datetime import datetime, timedelta
+import csv
+import copy
 import numpy as np
 
+import itzi.gis as gis
 import itzi.flow as flow
 import itzi.messenger as msgr
 
 
-class TimedArray():
+class TimedArray(object):
     """A container for np.ndarray with time informations.
     Update the array value according to the simulation time.
     array is accessed via get()
@@ -76,7 +79,7 @@ class TimedArray():
         return self
 
 
-class RasterDomain():
+class RasterDomain(object):
     """Group all rasters for the raster domain.
     Store them as np.ndarray with validity information (TimedArray)
     Include tools to update arrays from and write results to GIS,
@@ -109,25 +112,26 @@ class RasterDomain():
         # correspondance between input map names and the arrays
         self.in_k_corresp = {'z': 'dem', 'n': 'friction', 'h': 'start_h',
                              'y': 'start_y',
-                             'por': 'effective_porosity',
+                             'por': 'effective_pororosity',
                              'pres': 'capillary_pressure',
                              'con': 'hydraulic_conductivity',
                              'in_inf': 'infiltration',
                              'in_losses': 'losses',
+                             'init_losses': 'init_losses',
                              'rain': 'rain', 'in_q': 'inflow',
                              'bcv': 'bcval', 'bct': 'bctype'}
         # all keys that will be used for the arrays
-        self.k_input = list(self.in_k_corresp.keys())
+        self.k_input = self.in_k_corresp.keys()
         self.k_internal = ['inf', 'hmax', 'ext', 'y', 'hfe', 'hfs',
                            'qe', 'qs', 'qe_new', 'qs_new', 'etp',
                            'ue', 'us', 'v', 'vdir', 'vmax', 'fr',
-                           'n_drain', 'capped_losses', 'dire', 'dirs']
+                           'n_drain', 'capped_losses', 'dire', 'dirs','cum_init_losses','celerity']
         # arrays gathering the cumulated water depth from corresponding array
         self.k_stats = ['st_bound', 'st_inf', 'st_rain', 'st_etp',
-                        'st_inflow', 'st_losses', 'st_ndrain', 'st_herr']
+                        'st_inflow', 'st_losses', 'st_ndrain', 'st_herr','st_iloss']
         self.stats_corresp = {'inf': 'st_inf', 'rain': 'st_rain',
                               'in_q': 'st_inflow', 'capped_losses': 'st_losses',
-                              'n_drain': 'st_ndrain'}
+                              'n_drain': 'st_ndrain', 'init_losse':'st_iloss'}
         self.k_all = self.k_input + self.k_internal + self.k_stats
         # last update of statistical map entry
         self.stats_update_time = dict.fromkeys(self.k_stats)
@@ -139,8 +143,9 @@ class RasterDomain():
         self.isnew = dict.fromkeys(self.k_all, True)
         self.isnew['n_drain'] = False
 
-        # Create an array mask. True is not computed.
-        self.mask = self.gis.get_npmask()
+        # create an array mask
+        self.mask = np.full(shape=self.shape,
+                            fill_value=False, dtype=np.uint8)
 
         # Instantiate arrays and padded arrays filled with zeros
         self.arr = dict.fromkeys(self.k_all)
@@ -149,6 +154,8 @@ class RasterDomain():
 
         # Instantiate TimedArrays
         self.create_timed_arrays()
+        # Instantiate SWMM Rainfall
+        self.swmm_rainfall = 0.
 
     def water_volume(self):
         """get current water volume in the domain"""
@@ -214,8 +221,7 @@ class RasterDomain():
     def update_mask(self, arr):
         '''Create a mask array by marking NULL values from arr as True.
         '''
-        pass
-        # self.mask[:] = np.isnan(arr)
+        self.mask[:] = np.isnan(arr)
         return self
 
     def mask_array(self, arr, default_value):
@@ -245,9 +251,10 @@ class RasterDomain():
             # note: must run update_flow_dir() in SuperficialSimulation
             self.update_mask(self.arr['z'])
             self.mask_array(self.arr['z'], np.finfo(self.dtype).max)
-
+        else:
+            self.isnew['z'] = False
         # loop through the arrays
-        for k, ta in self.tarr.items():
+        for k, ta in self.tarr.iteritems():
             if not ta.is_valid(sim_time):
                 # z is done before
                 if k == 'z':
@@ -255,18 +262,23 @@ class RasterDomain():
                 # calculate statistics before updating array
                 if k in ['in_q', 'rain']:
                     self.populate_stat_array(k, sim_time)
+
                 # update array
-                msgr.debug(u"{}: update input array <{}>".format(sim_time, k))
+                msgr.verbose(u"{}: update input array <{}>".format(sim_time, k))
                 self.arr[k][:] = ta.get(sim_time)
                 self.isnew[k] = True
+
                 if k == 'n':
                     fill_value = 1
                 else:
                     fill_value = 0
                 # mask arrays
+
                 self.mask_array(self.arr[k], fill_value)
             else:
                 self.isnew[k] = False
+
+
         # calculate water volume at the beginning of the simulation
         if self.isnew['h']:
             self.start_volume = self.asum('h')
@@ -303,9 +315,11 @@ class RasterDomain():
         This applies for inputs that are needed to be taken into account,
          at every timestep, like inflows from user or drainage.
         """
+
         if any([self.isnew[k] for k in ('in_q', 'n_drain')]):
             flow.set_ext_array(self.arr['in_q'], self.arr['n_drain'],
                                self.arr['ext'])
+
             self.isnew['ext'] = True
         else:
             self.isnew['ext'] = False
@@ -317,6 +331,8 @@ class RasterDomain():
         out_arrays = {}
         if self.out_map_names['h'] is not None:
             out_arrays['h'] = self.get_unmasked('h')
+        if self.out_map_names['init_losses'] is not None:
+            out_arrays['init_losses'] = self.get_unmasked('cum_init_losses')
         if self.out_map_names['wse'] is not None:
             out_arrays['wse'] = self.get_unmasked('h') + self.get('z')
         if self.out_map_names['v'] is not None:
@@ -352,7 +368,7 @@ class RasterDomain():
                                           interval_s) * self.mmh_to_ms
         # Created volume (total since last record)
         if self.out_map_names['verror'] is not None:
-            self.populate_stat_array('capped_losses', sim_time)  # This is weird
+            self.populate_stat_array('capped_losses', sim_time)  # why is 'capped_losses' here?
             out_arrays['verror'] = self.get_unmasked('st_herr') * self.cell_surf
         return out_arrays
 

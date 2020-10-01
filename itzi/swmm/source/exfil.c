@@ -5,6 +5,8 @@
 //   Version:  5.1
 //   Date:     09/15/14  (Build 5.1.007)
 //             03/19/15  (Build 5.1.008)
+//             08/05/15  (Build 5.1.010)
+//             08/01/16  (Build 5.1.011)
 //   Author:   L. Rossman
 //
 //   Storage unit exfiltration functions.
@@ -12,11 +14,17 @@
 //   Build 5.1.008:
 //   - Monthly conductivity adjustment applied to exfiltration rate.
 //
+//   Build 5.1.010:
+//   - New modified Green-Ampt infiltration option used.
+//
+//   Build 5.1.011:
+//   - Fixed units conversion error for storage units with surface area curves.
+//
 //-----------------------------------------------------------------------------
 #define _CRT_SECURE_NO_DEPRECATE
 
 #include <math.h>
-#include <malloc.h>
+#include <stdlib.h>
 #include "headers.h"
 #include "infil.h"
 #include "exfil.h"
@@ -110,12 +118,18 @@ void  exfil_initState(int k)
                 else break;
                 alast = a;
             }
+
+            // --- convert from user units to internal units
+            exfil->btmArea /= UCF(LENGTH) * UCF(LENGTH);
+            exfil->bankMaxArea /= UCF(LENGTH) * UCF(LENGTH);
+            exfil->bankMinDepth /= UCF(LENGTH);
+            exfil->bankMaxDepth /= UCF(LENGTH);
         }
 
         // --- functional storage shape curve
         else
         {
-    		exfil->btmArea = Storage[k].aConst;
+            exfil->btmArea = Storage[k].aConst;
             if ( Storage[k].aExpon == 0.0 ) exfil->btmArea +=Storage[k].aCoeff;
             exfil->bankMinDepth = 0.0;
             exfil->bankMaxDepth = BIG;
@@ -142,9 +156,10 @@ double exfil_getLoss(TExfil* exfil, double tStep, double depth, double area)
     // --- find infiltration through bottom of unit
     if ( exfil->btmExfil->IMDmax == 0.0 )
     {
-        exfilRate = exfil->btmExfil->Ks * Adjust.hydconFactor;                 //(5.1.008)
+        exfilRate = exfil->btmExfil->Ks * Adjust.hydconFactor;
     }
-    else exfilRate = grnampt_getInfil(exfil->btmExfil, tStep, 0.0, depth);
+    else exfilRate = grnampt_getInfil(exfil->btmExfil, tStep, 0.0, depth,
+                                      MOD_GREEN_AMPT);
     exfilRate *= exfil->btmArea;
 
     // --- find infiltration through sloped banks
@@ -157,7 +172,7 @@ double exfil_getLoss(TExfil* exfil, double tStep, double depth, double area)
             // --- if infil. rate not a function of depth
             if ( exfil->btmExfil->IMDmax == 0.0 )
             {    
-                exfilRate += area * exfil->btmExfil->Ks * Adjust.hydconFactor; //(5.1.008)
+                exfilRate += area * exfil->btmExfil->Ks * Adjust.hydconFactor;
             }
 
             // --- infil. rate depends on depth above bank
@@ -176,7 +191,7 @@ double exfil_getLoss(TExfil* exfil, double tStep, double depth, double area)
 
                 // --- use Green-Ampt function for bank infiltration
                 exfilRate += area * grnampt_getInfil(exfil->bankExfil,
-                                    tStep, 0.0, depth);
+                                    tStep, 0.0, depth, MOD_GREEN_AMPT);
             }
         }
     }

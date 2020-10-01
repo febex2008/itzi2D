@@ -22,7 +22,7 @@ import itzi.flow as flow
 from itzi.itzi_error import DtError
 
 
-class Infiltration():
+class Infiltration(object):
     """Base class for Infiltration
     infiltration is calculated in mm/h
     """
@@ -65,6 +65,9 @@ class InfConstantRate(Infiltration):
         flow.inf_user(arr_h=self.dom.get('h'),
                       arr_inf_in=self.dom.get('in_inf'),
                       arr_inf_out=self.dom.get('inf'),
+                      arr_rain = self.dom.get('rain'), 
+                      arr_losses = self.dom.get('capped_losses'),
+                      arr_cum_init_losses = self.dom.get('cum_init_losses'),
                       dt=self._dt)
         return self
 
@@ -91,7 +94,11 @@ class InfGreenAmpt(Infiltration):
                     arr_conduct=self.dom.get('con'),
                     arr_inf_amount=self.infiltration_amount,
                     arr_water_soil_content=self.init_wat_soil_content,
-                    arr_inf_out=self.dom.get('inf'), dt=self._dt)
+                    arr_inf_out=self.dom.get('inf'), 
+                    arr_rain = self.dom.get('rain'), 
+                    arr_losses = self.dom.get('capped_losses'),
+                    arr_cum_init_losses = self.dom.get('cum_init_losses'),
+                    dt=self._dt)
         return self
 
 

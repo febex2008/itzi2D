@@ -5,6 +5,7 @@
 //   Version:  5.1
 //   Date:     03/20/14  (Build 5.1.001)
 //             09/15/14  (Build 5.1.007)
+//             08/01/16  (Build 5.1.011)
 //   Author:   L. Rossman
 //
 //   Input data processing functions.
@@ -12,12 +13,15 @@
 //   Build 5.1.007:
 //   - Support added for climate adjustment input data.
 //
+//   Build 5.1.011:
+//   - Support added for reading hydraulic event dates.
+//
 //-----------------------------------------------------------------------------
 #define _CRT_SECURE_NO_DEPRECATE
 
 #include <stdlib.h>
 #include <string.h>
-#include <malloc.h>
+#include <stdlib.h>
 #include <math.h>
 #include "headers.h"
 #include "lid.h"
@@ -35,6 +39,7 @@ static int  Ntokens;                   // Number of tokens in line of input
 static int  Mobjects[MAX_OBJ_TYPES];   // Working number of objects of each type
 static int  Mnodes[MAX_NODE_TYPES];    // Working number of node objects
 static int  Mlinks[MAX_LINK_TYPES];    // Working number of link objects
+static int  Mevents;                   // Working number of event periods
 
 //-----------------------------------------------------------------------------
 //  External Functions (declared in funcs.h)
@@ -53,7 +58,7 @@ static int  readTitle(char* line);
 static int  readControl(char* tok[], int ntoks);
 static int  readNode(int type);
 static int  readLink(int type);
-
+static int  readEvent(char* tok[], int ntoks);
 
 //=============================================================================
 
@@ -152,6 +157,7 @@ int input_readData()
     for (i = 0; i < MAX_OBJ_TYPES; i++)  Mobjects[i] = 0;
     for (i = 0; i < MAX_NODE_TYPES; i++) Mnodes[i] = 0;
     for (i = 0; i < MAX_LINK_TYPES; i++) Mlinks[i] = 0;
+    Mevents = 0;
 
     // --- initialize starting date for all time series
     for ( i = 0; i < Nobjects[TSERIES]; i++ )
@@ -425,6 +431,8 @@ int  addObject(int objType, char* id)
             Nobjects[LID]++;
         }
         break;
+
+      case s_EVENT: NumEvents++; break;
     }
     return errcode;
 }
@@ -457,8 +465,8 @@ int  parseLine(int sect, char *line)
       case s_EVAP:
         return climate_readEvapParams(Tok, Ntokens);
 
-      case s_ADJUST:                                                           //(5.1.007)
-        return climate_readAdjustments(Tok, Ntokens);                          //(5.1.007)
+      case s_ADJUST:
+        return climate_readAdjustments(Tok, Ntokens);
 
       case s_SUBCATCH:
         j = Mobjects[SUBCATCH];
@@ -481,7 +489,7 @@ int  parseLine(int sect, char *line)
       case s_GROUNDWATER:
         return gwater_readGroundwaterParams(Tok, Ntokens);
 
-	  case s_GWF:
+      case s_GWF:
         return gwater_readFlowExpression(Tok, Ntokens);
 
       case s_SNOWMELT:
@@ -585,6 +593,9 @@ int  parseLine(int sect, char *line)
 
       case s_LID_USAGE:
         return lid_readGroupParams(Tok, Ntokens);
+
+      case s_EVENT:
+        return readEvent(Tok, Ntokens);
 
       default: return 0;
     }
@@ -701,6 +712,30 @@ int readLink(int type)
     Mobjects[LINK]++;
     Mlinks[type]++;
     return err;
+}
+
+//=============================================================================
+
+int  readEvent(char* tok[], int ntoks)
+{
+    DateTime x[4];
+
+    if ( ntoks < 4 ) return error_setInpError(ERR_ITEMS, "");
+    if ( !datetime_strToDate(tok[0], &x[0]) )
+        return error_setInpError(ERR_DATETIME, tok[0]);
+    if ( !datetime_strToTime(tok[1], &x[1]) )
+        return error_setInpError(ERR_DATETIME, tok[1]);
+    if ( !datetime_strToDate(tok[2], &x[2]) )
+        return error_setInpError(ERR_DATETIME, tok[2]);
+    if ( !datetime_strToTime(tok[3], &x[3]) )
+        return error_setInpError(ERR_DATETIME, tok[3]);
+
+    Event[Mevents].start = x[0] + x[1];
+    Event[Mevents].end = x[2] + x[3];
+    if ( Event[Mevents].start >= Event[Mevents].end )
+       return error_setInpError(ERR_DATETIME, " - start date exceeds end date");
+    Mevents++;
+    return 0;
 }
 
 //=============================================================================

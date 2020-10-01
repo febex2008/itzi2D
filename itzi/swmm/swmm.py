@@ -1,7 +1,7 @@
 # coding=utf8
 
 """
-Copyright (C) 2015-2020  Laurent Courty
+Copyright (C) 2015-2017  Laurent Courty
 
 This program is free software; you can redistribute it and/or
 modify it under the terms of the GNU General Public License
@@ -49,9 +49,9 @@ class Swmm5(object):
     def swmm_open(self, input_file, report_file, output_file):
         '''Opens a swmm project
         '''
-        err = self.c_swmm5.swmm_open(c.c_char_p(input_file.encode('utf-8')),
-                                     c.c_char_p(report_file.encode('utf-8')),
-                                     c.c_char_p(output_file.encode('utf-8')))
+        err = self.c_swmm5.swmm_open(c.c_char_p(input_file),
+                                     c.c_char_p(report_file),
+                                     c.c_char_p(output_file))
         if err != 0:
             raise swmm_error.SwmmError(err)
         else:
@@ -254,6 +254,7 @@ class SwmmNode(object):
                        (u'type', 'TEXT'),
                        (u'linkage_type', 'TEXT'),
                        (u'linkage_flow', 'REAL'),
+                       (u'acc_linkage_flow', 'REAL'),
                        (u'inflow', 'REAL'),
                        (u'outflow', 'REAL'),
                        (u'latFlow', 'REAL'),
@@ -286,7 +287,7 @@ class SwmmNode(object):
         self.node_type = NODE_TYPES[values['node_type']]
         linkage_type = LINKAGE_TYPES[values['linkage_type']]
         attrs = [self.node_id, self.node_type, linkage_type,
-                 values['linkage_flow'],
+                 values['linkage_flow'], values['acc_linkage_flow'],
                  values['inflow'], values['outflow'], values['lat_flow'],
                  values['losses'], values['overflow'], values['depth'],
                  values['head'], values['crown_elev'], values['crest_elev'],
@@ -446,12 +447,12 @@ class SwmmNetwork(object):
     """
     NODES_DTYPES = [('idx', np.int32), ('linkage_type', np.int32),
                     ('inflow', np.float32), ('outflow', np.float32),
-                    ('linkage_flow', np.float32),
+                    ('linkage_flow', np.float32), ('acc_linkage_flow', np.float32), 
                     ('head', np.float32), ('crest_elev', np.float32),
                     ('node_type', np.int32), ('sub_index', np.int32),
                     ('invert_elev', np.float32), ('init_depth', np.float32),
                     ('full_depth', np.float32), ('sur_depth', np.float32),
-                    ('ponded_area', np.float32), ('degree', np.int32),
+                    ('ponded_area', np.float32),('weir_area', np.float32), ('degree', np.int32),
                     ('crown_elev', np.float32),
                     ('losses', np.float32), ('volume', np.float32),
                     ('full_volume', np.float32), ('overflow', np.float32),
@@ -464,9 +465,10 @@ class SwmmNetwork(object):
                     ('offset1', np.float32), ('offset2', np.float32),
                     ('full_depth', np.float32), ('froude', np.float32)]
 
-    def __init__(self, nodes_dict, links_dict, igis, g, cell_surf,
+    def __init__(self, nodes_dict, links_dict, igis, domain,  g, cell_surf,
                  orifice_coeff, free_weir_coeff, submerged_weir_coeff):
         self.g = g
+        self.dom = domain
         self.cell_surf = cell_surf
         self.orifice_coeff = orifice_coeff
         self.free_weir_coeff = free_weir_coeff
@@ -480,17 +482,16 @@ class SwmmNetwork(object):
         # create dicts relating index (int) to ID (str) {idx: id}
         self.links_id = {}
         for link_id in links_dict:
-            link_idx = swmm_c.get_object_index(ObjectType.LINK, link_id.encode('utf-8'))
+            link_idx = swmm_c.get_object_index(ObjectType.LINK, link_id)
             self.links_id[link_idx] = link_id
         self.nodes_id = {}
         for node_id in nodes_dict:
-            node_idx = swmm_c.get_object_index(ObjectType.NODE, node_id.encode('utf-8'))
+            node_idx = swmm_c.get_object_index(ObjectType.NODE, node_id)
             self.nodes_id[node_idx] = node_id
 
         # set arrays
         self._create_arrays()
-        # set linkability
-        self._set_linkable(nodes_dict)
+
 
     def get_arr(self, obj_type, k):
         """for a given key, return a view of the corresponding array
@@ -511,8 +512,8 @@ class SwmmNetwork(object):
         self.links = np.zeros([links_len], dtype=self.LINKS_DTYPES)
 
         # fill indices
-        self.nodes['idx'][:] = np.array(list(self.nodes_id.keys()))
-        self.links['idx'][:] = np.array(list(self.links_id.keys()))
+        self.nodes['idx'][:] = np.array(self.nodes_id.keys())
+        self.links['idx'][:] = np.array(self.links_id.keys())
         return self
 
     def _set_linkable(self, nodes_dict):
@@ -521,6 +522,7 @@ class SwmmNetwork(object):
         0: not linkable
         1: linked, no flow
         """
+        
         for node in self.nodes:
             node_idx = node['idx']
             node_id = self.nodes_id[node_idx]
@@ -528,15 +530,32 @@ class SwmmNetwork(object):
             # a node without coordinates cannot be linked
             if coors is None or not self.gis.is_in_region(coors.x, coors.y):
                 node['linkage_type'] = 0
+                #increase the ponded area to 1000 times the node surface area such as not to generate heads above ground
+                swmm_c.set_ponding_area(node_idx, 1000 * node['ponded_area'])
+
             else:
                 # get row and column
                 row, col = self.gis.coor2pixel(coors)
-                node['linkage_type'] = 1
-                # in other cases, set as linkable
-                node['row'] = int(row)
-                node['col'] = int(col)
-                # set ponding parameters
-                swmm_c.set_ponding_area(node_idx)
+                row = int(row)
+                col = int(col)
+                if self.dom.mask[row, col] :
+                    node['linkage_type'] = 0
+                    #increase the ponded area to 1000 times the node surface to allow large ponding area outside of domain
+                    swmm_c.set_ponding_area(node_idx, 1000 * node['ponded_area'])
+                else:
+                    node['linkage_type'] = 1
+                    # set ponding area 
+                    swmm_c.set_ponding_area(node_idx, self.cell_surf)
+                    # set weir area
+                    node['weir_area'] = node['ponded_area']
+                node['row'] = row
+                node['col'] = col
+            #set crest elevation equal to DEM height and set SWMM Node Full depth accordingly
+            z = self.dom.get('z')
+            node['crest_elev'] = z[row,col]
+            full_depth = node['crest_elev']-node['invert_elev']
+            swmm_c.set_NodeFullDepth(node['idx'], full_depth)
+            
         return self
 
     def update_links(self):
@@ -549,6 +568,7 @@ class SwmmNetwork(object):
         """Update arrays with values from SWMM using cython function
         """
         swmm_c.update_nodes(self.nodes)
+
         return self
 
     def get_link_values(self, link_id):
@@ -573,14 +593,23 @@ class SwmmNetwork(object):
             node_values[val_k] = np.asscalar(self.nodes[node_idx][val_k])
         return node_values
 
-    def apply_linkage(self, arr_h, arr_z, arr_qdrain, dt2d, dt1d):
+    def get_rainfall(self, gage_id):
+        gage_idx = swmm_c.get_object_index(ObjectType.GAGE, gage_id)
+        return swmm_c.get_Raingage(gage_idx)
+
+
+    def drainage_flow(self, arr_h, arr_z, arr_qdrain, arr_qw, arr_qe, arr_qn, arr_qs, arr_q_in, mask, dx, dy, dt2d, dt1d):
         """
         """
-        # update values from swmm
-        self.update_nodes()
-        swmm_c.apply_linkage_flow(arr_node=self.nodes, arr_h=arr_h, arr_z=arr_z,
-                                  arr_qdrain=arr_qdrain, cell_surf=self.cell_surf,
-                                  dt2d=dt2d, dt1d=dt1d, g=self.g,
+
+        # compute drainage flow
+        hmax = swmm_c.drainage_flow(arr_node=self.nodes, arr_h=arr_h, arr_z=arr_z,
+                                  arr_qdrain=arr_qdrain, arr_qw=arr_qw, arr_qe=arr_qe, arr_qn=arr_qn, arr_qs=arr_qs, arr_q_in=arr_q_in, arr_mask = mask,
+                                  dx=dx, dy=dy, dt2d=dt2d, dt1d=dt1d, g=self.g, 
                                   orifice_coeff=self.orifice_coeff,
                                   free_weir_coeff=self.free_weir_coeff,
                                   submerged_weir_coeff=self.submerged_weir_coeff)
+        return hmax
+
+    def apply_linkage_flow_SWMM(self, arr_qdrain,dt1d):
+        swmm_c.apply_linkage_flow_SWMM(arr_node = self.nodes, arr_qdrain = arr_qdrain, dt1d=dt1d)

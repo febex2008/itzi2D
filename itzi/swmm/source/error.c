@@ -5,12 +5,16 @@
 //   Version: 5.1
 //   Date:    03/20/14  (Build 5.1.001)
 //            03/19/15  (Build 5.1.008)
+//            08/05/15  (Build 5.1.010)
 //   Author:  L. Rossman
 //
 //   Error messages
 //
 //   Build 5.1.008:
 //   - Text of Error 217 for control rules modified.
+//
+//   Build 5.1.010:
+//   - Text of Error 318 for rainfall data files modified.
 //
 //-----------------------------------------------------------------------------
 #define _CRT_SECURE_NO_DEPRECATE
@@ -118,7 +122,8 @@
 #define ERR313 "\n  ERROR 313: cannot open scratch rainfall interface file."
 #define ERR315 "\n  ERROR 315: cannot open rainfall interface file %s."
 #define ERR317 "\n  ERROR 317: cannot open rainfall data file %s."
-#define ERR318 "\n  ERROR 318: date out of sequence in rainfall data file %s."
+#define ERR318 \
+"\n  ERROR 318: the following line is out of sequence in rainfall data file %s." //(5.1.010)
 #define ERR319 "\n  ERROR 319: unknown format for rainfall data file %s."
 #define ERR320 "\n  ERROR 320: invalid format for rainfall interface file."
 #define ERR321 "\n  ERROR 321: no data in rainfall interface file for gage %s."
@@ -163,6 +168,17 @@
 "\n  ERROR 405: amount of output produced will exceed maximum file size;" \
 "\n             either reduce Ending Date or increase Reporting Time Step."
 
+// API Error Keys
+#define ERR501 "\n API Key Error: Object Type Outside Bonds"
+#define ERR502 "\n API Key Error: Network Not Initialized (Input file open?)"
+#define ERR503 "\n API Key Error: Simulation Not Running"
+#define ERR504 "\n API Key Error: Incorrect object type for parameter chosen"
+#define ERR505 "\n API Key Error: Object index out of Bounds."
+#define ERR506 "\n API Key Error: Invalid Pollutant Index"
+#define ERR507 "\n API Key Error: Invalid Inflow Type"
+#define ERR508 "\n API Key Error: Invalid Timeseries Index"
+#define ERR509 "\n API Key Error: Invalid Pattern Index"
+
 ////////////////////////////////////////////////////////////////////////////
 //  NOTE: Need to update ErrorMsgs[], ErrorCodes[], and ErrorType
 //        (in error.h) whenever a new error message is added.
@@ -180,7 +196,8 @@ char* ErrorMsgs[] =
       ERR313, ERR315, ERR317, ERR318, ERR319, ERR320, ERR321, ERR323, ERR325,
       ERR327, ERR329, ERR330, ERR331, ERR333, ERR335, ERR336, ERR337, ERR338,
       ERR339, ERR341, ERR343, ERR345, ERR351, ERR353, ERR355, ERR357, ERR361,
-      ERR363, ERR401, ERR402, ERR403, ERR405};
+      ERR363, ERR401, ERR402, ERR403, ERR405, ERR501, ERR502, ERR503, ERR504,
+	  ERR505, ERR506, ERR507, ERR508, ERR509};
 
 int ErrorCodes[] =
     { 0,      101,    103,    105,    107,    108,    109,    110,    111,
@@ -194,7 +211,8 @@ int ErrorCodes[] =
       313,    315,    317,    318,    319,    320,    321,    323,    325,
       327,    329,    330,    331,    333,    335,    336,    337,    338,
       339,    341,    343,    345,    351,    353,    355,    357,    361,
-      363,    401,    402,    403,    405};
+      363,    401,    402,    403,    405,    501,    502,    503,    504,
+	  505,    506,    507,    508,    509};
 
 char  ErrString[256];
 

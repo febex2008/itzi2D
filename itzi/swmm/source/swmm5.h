@@ -4,11 +4,13 @@
 //   Project: EPA SWMM5
 //   Version: 5.1
 //   Date:    03/24/14  (Build 5.1.001)
+//            08/01/16  (Build 5.1.011)
 //   Author:  L. Rossman
 //
 //   Prototypes for SWMM5 functions exported to swmm5.dll.
 //
 //-----------------------------------------------------------------------------
+
 #ifndef SWMM5_H
 #define SWMM5_H
 
@@ -25,9 +27,9 @@
 // --- define DLLEXPORT
 
 #ifdef WINDOWS
-  #define DLLEXPORT __declspec(dllexport) __stdcall
+    #define DLLEXPORT __declspec(dllexport) __stdcall
 #else
-  #define DLLEXPORT
+    #define DLLEXPORT
 #endif
 
 // --- use "C" linkage for C++ programs
@@ -46,6 +48,8 @@ int  DLLEXPORT   swmm_getMassBalErr(float* runoffErr, float* flowErr,
                  float* qualErr);
 int  DLLEXPORT   swmm_close(void);
 int  DLLEXPORT   swmm_getVersion(void);
+int  DLLEXPORT   swmm_getError(char* errMsg, int msgLen);
+int  DLLEXPORT   swmm_getWarnings(void);
 
 // Coupling functions (GESZ)
 int DLLEXPORT   swmm_getNodeID(int index, char* id);
@@ -56,9 +60,11 @@ int DLLEXPORT   swmm_getNodeHeads(double* heads);
 int DLLEXPORT   swmm_addNodeInflow(int index, double inflow);
 int DLLEXPORT   swmm_getLinkID(int index, char* id);
 int DLLEXPORT   swmm_getLinkData(int index, linkData* data);
-
+// Hydrology functions for Itzi (P. Borer)
+double DLLEXPORT   swmm_getRaingage(int index);
 // Coupling functions (L. Courty)
 int DLLEXPORT   swmm_setNodeFullDepth(int index, double depth);
+int DLLEXPORT   swmm_setNodeSurDepth(int index, double depth);
 int DLLEXPORT   swmm_setAllowPonding(int ap);
 int DLLEXPORT   swmm_setNodePondedArea(int index, double area);
 

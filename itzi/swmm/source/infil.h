@@ -5,9 +5,17 @@
 //   Version: 5.1
 //   Date:    03/20/14   (Build 5.1.001)
 //            09/15/14   (Build 5.1.007)
+//            08/05/15   (Build 5.1.010)
+//            05/10/18   (Build 5.1.013)
 //   Author:  L. Rossman (US EPA)
 //
 //   Public interface for infiltration functions.
+//
+//   Build 5.1.010:
+//   - New Modified Green Ampt infiltration option added.
+//
+//   Build 5.1.013:
+//   - New function infil_setInfilFactor() added.
 //-----------------------------------------------------------------------------
 
 #ifndef INFIL_H
@@ -20,6 +28,7 @@ enum InfilType {
      HORTON,                      // Horton infiltration
      MOD_HORTON,                  // Modified Horton infiltration
      GREEN_AMPT,                  // Green-Ampt infiltration
+     MOD_GREEN_AMPT,              // Modified Green-Ampt infiltration
      CURVE_NUMBER};               // SCS Curve Number infiltration
 
 //---------------------
@@ -41,8 +50,6 @@ typedef struct
 //-------------------------
 // Green-Ampt Infiltration
 //-------------------------
-
-// ----  Some variable names changed for release 5.1.007  ----                 //(5.1.007)
 typedef struct
 {
    double        S;               // avg. capillary suction (ft)
@@ -92,12 +99,13 @@ int     infil_readParams(int model, char* tok[], int ntoks);
 void    infil_initState(int area, int model);
 void    infil_getState(int j, int m, double x[]);
 void    infil_setState(int j, int m, double x[]);
+void    infil_setInfilFactor(int j);                                           //(5.1.013)
 double  infil_getInfil(int area, int model, double tstep, double rainfall,
         double runon, double depth);
 
 int     grnampt_setParams(TGrnAmpt *infil, double p[]);
 void    grnampt_initState(TGrnAmpt *infil);
 double  grnampt_getInfil(TGrnAmpt *infil, double tstep, double irate,
-        double depth);
+        double depth, int modelType);
 
 #endif

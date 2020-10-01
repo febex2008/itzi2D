@@ -4,6 +4,8 @@
 //   Project: EPA SWMM5
 //   Version: 5.1
 //   Date:    03/20/14  (Build 5.1.001)
+//            08/01/16  (Build 5.1.011)
+//            05/10/18  (Build 5.1.013)
 //   Author:  L. Rossman
 //
 //   Various Constants
@@ -13,7 +15,7 @@
 // General Constants
 //------------------
 
-#define   VERSION            51009
+#define   VERSION            51013 
 #define   MAGICNUMBER        516114522
 #define   EOFMARK            0x1A           // Use 0x04 for UNIX systems
 #define   MAXTITLE           3              // Max. # title lines

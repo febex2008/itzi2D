@@ -15,13 +15,14 @@ GNU General Public License for more details.
 
 from __future__ import division
 from __future__ import absolute_import
+import numpy as np
 from datetime import timedelta
 
 import itzi.flow as flow
 from itzi.itzi_error import DtError
 
 
-class Hydrology():
+class Hydrology(object):
     """
     """
     def __init__(self, raster_domain, dt, infiltration):
@@ -57,8 +58,8 @@ class Hydrology():
         """Run hydrologic models and update the water depth map
         """
         # calculate flows
-        self.infiltration.step()
         self.cap_losses()
+        self.infiltration.step()
         self.apply_hydrology()
         return self
 
@@ -66,10 +67,11 @@ class Hydrology():
         """Cap losses to water depth on the cell.
         Input and output are considered to be in mm/h
         """
-        flow.inf_user(arr_h=self.dom.get('h'),
-                      arr_inf_in=self.dom.get('in_losses'),
-                      arr_inf_out=self.dom.get('capped_losses'),
-                      dt=self._dt)
+        flow.cap_losses(self._dt,
+                        self.dom.get('h'),
+                        self.dom.get('rain'),
+                        self.dom.get('in_losses'),
+                        self.dom.get('capped_losses'))
 
     def apply_hydrology(self):
         """Update water depth (h) by adding/removing volume from:
@@ -79,6 +81,9 @@ class Hydrology():
                              arr_inf=self.dom.get('inf'),
                              arr_etp=self.dom.get('etp'),
                              arr_capped_losses=self.dom.get('capped_losses'),
+                             arr_init_losses = self.dom.get('init_losses'),
+                             arr_cum_init_losses = self.dom.get('cum_init_losses'),
                              arr_h=self.dom.get('h'),
+                             arr_bct=self.dom.get('bct'),
                              dt=self._dt)
         return self

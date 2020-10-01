@@ -1,6 +1,6 @@
 # coding=utf8
 """
-Copyright (C) 2015-2020 Laurent Courty
+Copyright (C) 2015-2017 Laurent Courty
 
 This program is free software; you can redistribute it and/or
 modify it under the terms of the GNU General Public License
@@ -16,8 +16,9 @@ from __future__ import division
 from __future__ import absolute_import
 import warnings
 from datetime import datetime, timedelta
-import copy
 import numpy as np
+import copy
+from matplotlib.pyplot import imshow, show, colorbar
 
 from itzi.surfaceflow import SurfaceFlowSimulation
 from itzi.rasterdomain import RasterDomain
@@ -30,7 +31,7 @@ import itzi.hydrology as hydrology
 from itzi.itzi_error import NullError
 
 
-class SimulationManager():
+class SimulationManager(object):
     """Manage the general simulation:
     - update input values for each time-step
     - trigger the writing of results and statistics
@@ -38,7 +39,7 @@ class SimulationManager():
     """
 
     def __init__(self, sim_times, input_maps, output_maps, sim_param,
-                 drainage_params, grass_params,
+                 drainage_params,
                  dtype=np.float32,
                  dtmin=timedelta(seconds=0.01),
                  stats_file=None):
@@ -56,10 +57,6 @@ class SimulationManager():
         self.dt = dtmin  # Global time-step
         self.dtinf = sim_param['dtinf']
 
-        # Temp region and mask
-        self.region_id = grass_params['region']
-        self.raster_mask_id = grass_params['mask']
-
         # dictionaries of map names
         self.in_map_names = input_maps
         self.out_map_names = output_maps
@@ -76,13 +73,26 @@ class SimulationManager():
         # statistic file name
         self.stats_file = stats_file
 
-    def __set_models(self, igis):
+        # instantiate a Igis object
+        self.gis = gis.Igis(start_time=self.start_time,
+                            end_time=self.end_time,
+                            dtype=self.dtype,
+                            mkeys=self.in_map_names.keys())
+        msgr.verbose(u"Reading maps information from GIS...")
+        self.gis.read(self.in_map_names)
+
+        # instantiate simulation objects
+        msgr.verbose(u"Setting up models...")
+        self.__set_models()
+        msgr.verbose(u"Models set up")
+
+    def __set_models(self):
         """Instantiate models objects
         """
         # RasterDomain
         msgr.debug(u"Setting up raster domain...")
         try:
-            self.rast_domain = RasterDomain(self.dtype, igis,
+            self.rast_domain = RasterDomain(self.dtype, self.gis,
                                             self.in_map_names, self.out_map_names)
         except MemoryError:
             msgr.fatal(u"Out of memory.")
@@ -117,49 +127,16 @@ class SimulationManager():
             msgr.debug(u"Setting up drainage model...")
             self.drainage = DrainageSimulation(self.rast_domain,
                                                self.drainage_params,
-                                               igis, self.sim_param['g'])
+                                               self.gis, self.sim_param['g'])
         else:
             self.drainage = None
 
         # reporting object
         msgr.debug(u"Setting up reporting object...")
-        self.report = Report(igis, self.temporal_type,
+        self.report = Report(self.gis, self.temporal_type,
                              self.sim_param['hmin'], self.massbal,
                              self.rast_domain,
                              self.drainage, self.drainage_params['output'])
-        return self
-
-    def initialize(self):
-        """Set-up the simulation.
-        """
-        # instantiate simulation objects
-        gis_kwargs = dict(start_time=self.start_time,
-                          end_time=self.end_time,
-                          dtype=self.dtype,
-                          mkeys=self.in_map_names.keys(),
-                          region_id=self.region_id,
-                          raster_mask_id=self.raster_mask_id)
-        self.igis = gis.Igis(**gis_kwargs)
-        msgr.verbose(u"Setting up models...")
-        self.__set_models(self.igis)
-        msgr.verbose(u"Models set up")
-        msgr.verbose(u"Reading maps information from GIS...")
-        self.igis.read(self.in_map_names)
-
-        # dict of next time-step (datetime object)
-        self.next_ts = {'end': self.end_time,
-                        'rec': self.start_time + self.record_step}
-        for k in ['hyd', 'surf', 'drain']:
-            self.next_ts[k] = self.start_time
-        # case if no drainage simulation
-        if not self.drainage:
-            self.next_ts['drain'] = self.end_time
-        # First time-step is forced
-        self.nextstep = self.sim_time + self.dt
-        # record initial state
-        self.rast_domain.update_input_arrays(self.sim_time)
-        self.report.step(self.sim_time)
-        self.rast_domain.reset_stats(self.sim_time)
         return self
 
     def run(self):
@@ -167,32 +144,56 @@ class SimulationManager():
         including infiltration, surface flow etc.,
         recording of data and mass_balance calculation
         """
+        # dict of next time-step (datetime object)
+        self.next_ts = {'end': self.end_time,
+                        'rec': self.start_time + self.record_step}
+        for k in ['hyd', 'surf', 'drain']:
+            self.next_ts[k] = self.start_time
+
+        # First time-step is forced
+        self.nextstep = self.sim_time + self.dt
+        self.surf_sim.dt = self.dt
+        self.rast_domain.update_input_arrays(self.sim_time)
+        self.surf_sim.solve_q()
+        # case if no drainage simulation
+        if not self.drainage:
+            self.next_ts['drain'] = self.end_time
+            self.rast_domain.isnew['n_drain'] = False
+        else:
+            self.drainage.set_linkable()
+            self.rast_domain.isnew['n_drain'] = True
+            self.drainage.solve_dt()
+        # record initial state
+
+        self.report.step(self.sim_time)
+        self.rast_domain.reset_stats(self.sim_time)
         sim_start_time = datetime.now()
+
         msgr.verbose(u"Starting time-stepping...")
         while self.sim_time < self.end_time:
             # display advance of simulation
             msgr.percent(self.start_time, self.end_time,
                          self.sim_time, sim_start_time)
+
+            # recalculate the flow direction if DEM changed
+            if self.rast_domain.isnew['z']:
+                self.surf_sim.update_flow_dir()
             # step models
             self.step()
-        return self
-
-    def finalize(self):
-        """Perform all operations after time stepping.
-        """
+            # update simulation time
+            self.sim_time += self.dt
+            # update input arrays
+            self.rast_domain.update_input_arrays(self.sim_time)
         # write final report
         self.report.end(self.sim_time)
-        self.igis.cleanup()
         return self
 
     def step(self):
         """Step each of the models if needed
         """
-        # recalculate the flow direction if DEM changed
-        if self.rast_domain.isnew['z']:
-            self.surf_sim.update_flow_dir()
 
-        # hydrology #
+        # HYDROLOGY MODEL - compute rainfall rates, losses rates, infiltration rates#
+        #------------------------------------------------------------------------------
         if self.sim_time == self.next_ts['hyd']:
             self.hydrology.solve_dt()
             # calculate when will happen the next time-step
@@ -202,62 +203,77 @@ class SimulationManager():
             self.rast_domain.populate_stat_array('inf', self.sim_time)
             self.rast_domain.populate_stat_array('capped_losses', self.sim_time)
 
-        # drainage #
-        if self.sim_time == self.next_ts['drain'] and self.drainage:
-            self.drainage.solve_dt()
-            # calculate when will happen the next time-step
-            self.next_ts['drain'] += self.drainage.dt
+
+        #SWMM MODEL - Apply linkage flow to SWMM Model and STEP SWMM Model
+        #------------------------------------------------------------------------------
+        if self.sim_time == self.next_ts['drain'] and self.drainage:            
+        
+            self.drainage.apply_drainage_flow()
             self.drainage.step()
-            self.drainage.apply_linkage(self.dt.total_seconds())
-            self.rast_domain.isnew['n_drain'] = True
-            # update stat array
+            self.drainage.solve_dt()        
+            self.next_ts['drain'] += self.drainage.dt #compute next 1D time            
+
+        # SURFACE FLOW SIM
+        #------------------------------------------------------------------------------
+        #calculate fluxes at cell interfaces
+        self.surf_sim.solve_q()
+        
+        # calculate drainage flows and apply it to 2D Model at each 2D timestep
+        if self.drainage:
+            self.drainage.drainage_flow(self.dt.total_seconds()) #compute drainage flow 
+            self.rast_domain.update_ext_array()
             self.rast_domain.populate_stat_array('n_drain', self.sim_time)
         else:
-            self.rast_domain.isnew['n_drain'] = False
+            self.rast_domain.update_ext_array()
 
-        # surface flow #
-        # update arrays of infiltration, rainfall etc.
-        self.rast_domain.update_ext_array()
-        # force time-step to be the general time-step
-        self.surf_sim.dt = self.dt
-        # surf_sim.step() raise NullError in case of NaN/NULL cell
-        # if this happen, stop simulation and
-        # output a map showing the errors
+        self.surf_sim.apply_boundary_conditions()
         try:
-            self.surf_sim.step()
+            self.surf_sim.update_h()
+            # in case of NaN/NULL cells, raisea NullError
+            self.surf_sim.arr_err = np.isnan(self.rast_domain.get('h'))
+            if np.any(self.surf_sim.arr_err):
+                raise NullError
         except NullError:
             self.report.write_error_to_gis(self.surf_sim.arr_err)
             msgr.fatal(u"{}: Null value detected in simulation, "
                        u"terminating".format(self.sim_time))
+        self.surf_sim.swap_flow_arrays()
         # calculate when should happen the next surface time-step
         self.surf_sim.solve_dt()
-        self.next_ts['surf'] += self.surf_sim.dt
+        # increment time when should happen next timestep
+        if self.drainage:
+            self.next_ts['surf'] += min(self.surf_sim.dt, self.drainage.dt2d) #self.drainage.dt2d is the courant condition based on maximum node head.
+        else:
+            self.next_ts['surf'] += self.surf_sim.dt
 
+
+        #REPORTING
+        #------------------------------------------------------------------------------
         # send current time-step duration to mass balance object
         if self.massbal:
             self.massbal.add_value('tstep', self.dt.total_seconds())
 
         # Reporting #
-        if self.sim_time >= self.next_ts['rec']:
+        if self.sim_time == self.next_ts['rec']:
             msgr.verbose(u"{}: Writing output maps...".format(self.sim_time))
             self.report.step(self.sim_time)
             self.next_ts['rec'] += self.record_step
             # reset statistic maps
             self.rast_domain.reset_stats(self.sim_time)
 
-        # update input arrays. This is done at initialization as well.
-        self.rast_domain.update_input_arrays(self.sim_time)
+        #GLOBAL STEP CALCULATION
+        #------------------------------------------------------------------------------
         # find next step
         self.nextstep = min(self.next_ts.values())
         # force the surface time-step to the lowest time-step
         self.next_ts['surf'] = self.nextstep
         self.dt = self.nextstep - self.sim_time
-        # update simulation time
-        self.sim_time += self.dt
+        # force time-step to be the general time-step
+        self.surf_sim.dt = self.dt
         return self
 
 
-class Report():
+class Report(object):
     """In charge of results reporting and writing
     """
     def __init__(self, igis, temporal_type, hmin, massbal, rast_dom,
@@ -300,15 +316,18 @@ class Report():
         assert isinstance(sim_time, datetime)
         # do the last step
         self.step(sim_time)
-        self.gis.finalize()  # Make sure all maps are written
-        # register maps and write max maps
-        self.register_results_in_gis()
+
+
         if self.out_map_names['h']:
             self.write_hmax_to_gis()
         if self.out_map_names['v']:
             self.write_vmax_to_gis()
+        # # register maps and write max maps
+        # self.register_results_in_gis()
+        # imshow(self.rast_dom.get('h'))
+        # colorbar()
+        # show()
         return self
-
     def write_mass_balance(self, sim_time):
         """Append mass balance values to file
         """
@@ -319,7 +338,7 @@ class Report():
         """Format the name of each maps using the record number as suffix
         Send a tuple (array, name, key) to the GIS writing function.
         """
-        for k, arr in self.output_arrays.items():
+        for k, arr in self.output_arrays.iteritems():
             if isinstance(arr, np.ndarray):
                 suffix = str(self.record_counter).zfill(4)
                 map_name = "{}_{}".format(self.out_map_names[k], suffix)
@@ -368,13 +387,13 @@ class Report():
         and register the corresponding listed maps
         """
         # rasters
-        for mkey, lst in self.output_maplist.items():
+        for mkey, lst in self.output_maplist.iteritems():
             strds_name = self.out_map_names[mkey]
             if strds_name is None:
                 continue
             self.gis.register_maps_in_stds(mkey, strds_name, lst, 'strds',
                                            self.temporal_type)
-        # vector
+        vector
         if self.drainage_sim and self.drainage_out:
             self.gis.register_maps_in_stds("Itzï drainage results",
                                            self.drainage_out,

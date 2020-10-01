@@ -1,6 +1,6 @@
 # coding=utf8
 """
-Copyright (C) 2015-2020 Laurent Courty
+Copyright (C) 2015-2017 Laurent Courty
 
 This program is free software; you can redistribute it and/or
 modify it under the terms of the GNU General Public License
@@ -17,39 +17,72 @@ from __future__ import absolute_import
 import os
 import atexit
 from collections import namedtuple
-from datetime import datetime, timedelta
-# from multiprocessing import Process, JoinableQueue
-from threading import Thread, Lock
-from queue import Queue
+import numpy as np
 import copy
 
-import numpy as np
+from datetime import datetime, timedelta
 
 import itzi.messenger as msgr
 
 import grass.script as gscript
+import grass.script.array as garray
 import grass.temporal as tgis
 import grass.pygrass.utils as gutils
 from grass.pygrass.gis.region import Region
 from grass.pygrass import raster
+from grass.pygrass.raster import RasterRow
 from grass.pygrass.vector import VectorTopo
 from grass.pygrass.vector.geometry import Point, Line
 from grass.pygrass.vector.basic import Cats
 from grass.pygrass.vector.table import Link
 
-# color rules
-_ROOT = os.path.dirname(__file__)
-_DIR = os.path.join(_ROOT, 'data', 'colortable')
-RULE_H = os.path.join(_DIR, 'depth.txt')
-RULE_V = os.path.join(_DIR, 'velocity.txt')
-RULE_VDIR = os.path.join(_DIR, 'vdir.txt')
-RULE_FR = os.path.join(_DIR, 'froude.txt')
-RULE_DEF = os.path.join(_DIR, 'default.txt')
-colors_rules_dict = {'h': RULE_H, 'v': RULE_V, 'vdir': RULE_VDIR,
-                     'fr': RULE_FR}
-# Check if color rule paths are OK
-for f in colors_rules_dict.values():
-    assert os.path.isfile(f)
+
+def is_latlon():
+    """Return True if the location is latlon
+    """
+    return gscript.locn_is_latlong()
+
+
+def set_temp_region(region_id):
+    """Set a temporary GRASS region
+    """
+    gscript.use_temp_region()
+    gscript.run_command("g.region", region=region_id)
+
+
+def del_temp_region():
+    """Remove a temporary GRASS region
+    """
+    gscript.del_temp_region()
+
+
+def set_temp_mask(raster_for_mask):
+    """If a mask is already set, keep it for later.
+    Set a new mask.
+    """
+    has_old_mask = bool(gscript.read_command("g.list", type="raster",
+                                             pattern="MASK"))
+    if has_old_mask:
+        # Save the current MASK under a temp name
+        old_mask_name = "itzi_old_MASK_{}".format(os.getpid())
+        gscript.run_command("g.rename", quiet=True, overwrite=True,
+                            raster="MASK,{}".format(old_mask_name))
+        os.environ['ITZI_OLD_MASK'] = old_mask_name
+    gscript.run_command("r.mask", quiet=True, raster=raster_for_mask)
+    # make sure to remove the mask in case of early exit
+    atexit.register(del_temp_mask)
+
+
+def del_temp_mask():
+    """Reset the old mask, remove if there was not.
+    """
+    try:
+        old_mask_name = os.environ.pop('ITZI_OLD_MASK')
+    except KeyError:
+        gscript.run_command("r.mask", quiet=True, flags='r')
+    else:
+        gscript.run_command("g.rename", quiet=True, overwrite=True,
+                            raster="{},MASK".format(old_mask_name))
 
 
 def file_exists(name):
@@ -70,45 +103,7 @@ def check_output_files(file_list):
             msgr.fatal(u"File {} exists and will not be overwritten".format(map_name))
 
 
-def apply_color_table(map_name, mkey):
-    '''Apply a color table determined by mkey to the given map
-    '''
-    try:
-        colors_rules = colors_rules_dict[mkey]
-    except KeyError:
-        # in case no specific color table is given, use GRASS default.
-        pass
-    else:
-        gscript.run_command('r.colors', quiet=True,
-                            rules=colors_rules, map=map_name)
-    return None
-
-
-def raster_writer(q, lock):
-    """Write a raster map in GRASS
-    """
-    while True:
-        # Get values from the queue
-        next_object = q.get()
-        if next_object is None:
-            break
-        arr, rast_name, mtype, mkey, overwrite = next_object
-        # Write raster
-        lock.acquire()
-        with raster.RasterRow(rast_name, mode='w', mtype=mtype,
-                              overwrite=overwrite) as newraster:
-            newrow = raster.Buffer((arr.shape[1],), mtype=mtype)
-            for row in arr:
-                newrow[:] = row[:]
-                newraster.put_row(newrow)
-        # Apply colour table
-        apply_color_table(rast_name, mkey)
-        lock.release()
-        # Signal end of task
-        q.task_done()
-
-
-class Igis():
+class Igis(object):
     """
     A class providing an access to GRASS GIS Python interfaces:
     scripting, pygrass, temporal GIS
@@ -125,86 +120,52 @@ class Igis():
                            'int8', 'int16', 'int32', 'int64',
                            'uint8', 'uint16', 'uint32', 'uint64')}
 
+    # colour rules
+    _ROOT = os.path.dirname(__file__)
+    _DIR = os.path.join(_ROOT, 'data', 'colortable')
+    rules_h = os.path.join(_DIR, 'depth.txt')
+    rules_v = os.path.join(_DIR, 'velocity.txt')
+    rules_vdir = os.path.join(_DIR, 'vdir.txt')
+    rules_fr = os.path.join(_DIR, 'froude.txt')
+    rules_def = os.path.join(_DIR, 'default.txt')
+    colors_rules_dict = {'h': rules_h, 'v': rules_v, 'vdir': rules_vdir,
+                         'fr': rules_fr}
+
     # define used namedtuples
     strds_cols = ['id', 'start_time', 'end_time']
     MapData = namedtuple('MapData', strds_cols)
     LinkDescr = namedtuple('LinkDescr', ['layer', 'table'])
 
-    def __init__(self, start_time, end_time, dtype, mkeys, region_id, raster_mask_id):
+    def __init__(self, start_time, end_time, dtype, mkeys):
         assert isinstance(start_time, datetime), \
             "start_time not a datetime object!"
         assert isinstance(end_time, datetime), \
             "end_time not a datetime object!"
         assert start_time <= end_time, "start_time > end_time!"
 
-        self.region_id = region_id
-        self.raster_mask_id = raster_mask_id
         self.start_time = start_time
         self.end_time = end_time
         self.dtype = dtype
-
-        self.old_mask_name = None
-
-        # LatLon is not supported
-        if gscript.locn_is_latlong():
-            msgr.fatal(u"latlong location is not supported. "
-                       u"Please use a projected location")
-        # Set region
-        if self.region_id:
-            gscript.use_temp_region()
-            gscript.run_command("g.region", region=region_id)
         self.region = Region()
         self.xr = self.region.cols
         self.yr = self.region.rows
         # Check if region is at least 3x3
         if self.xr < 3 or self.yr < 3:
             msgr.fatal(u"GRASS Region should be at least 3 cells by 3 cells")
+
         self.dx = self.region.ewres
         self.dy = self.region.nsres
         self.reg_bbox = {'e': self.region.east, 'w': self.region.west,
                          'n': self.region.north, 's': self.region.south}
-        # Set temporary mask
-        if self.raster_mask_id:
-            self.set_temp_mask()
         self.overwrite = gscript.overwrite()
         self.mapset = gutils.getenv('MAPSET')
         self.maps = dict.fromkeys(mkeys)
         # init temporal module
         tgis.init()
-        # Create thread and queue for writing raster maps
-        self.raster_lock = Lock()
-        self.raster_writer_queue = Queue(maxsize=15)
-        worker_args = (self.raster_writer_queue, self.raster_lock)
-        self.raster_writer_thread = Thread(name="RasterWriter",
-                                           target=raster_writer,
-                                           args=worker_args)
-        self.raster_writer_thread.start()
 
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        self.finalize()
-        self.cleanup()
-
-    def finalize(self):
-        """Make sure that all maps are written.
-        """
-        msgr.debug("Writing last maps...")
-        self.raster_writer_queue.join()
-
-    def cleanup(self):
-        """Remove temporary region and mask.
-        """
-        msgr.debug("Reset mask and region")
-        if self.raster_mask_id:
-            msgr.debug("Remove temp MASK...")
-            self.del_temp_mask()
-        if self.region_id:
-            msgr.debug("Remove temp region...")
-            gscript.del_temp_region()
-        self.raster_writer_queue.put(None)
-        self.raster_writer_thread.join()
+        assert os.path.isfile(self.rules_h)
+        assert os.path.isfile(self.rules_v)
+        assert os.path.isfile(self.rules_def)
 
     def grass_dtype(self, dtype):
         if dtype in self.dtype_conv['DCELL']:
@@ -236,44 +197,6 @@ class Igis():
         to maps from relative stds
         """
         return self.start_time + timedelta(seconds=self.to_s(unit, time))
-
-    def has_mask(self):
-        """Return True if the mapset has a mask, False otherwise.
-        """
-        return bool(gscript.read_command("g.list", type="raster", pattern="MASK"))
-
-    def get_npmask(self):
-        """Return a boolean numpy ndarray where True is outside the domain.
-        """
-        if self.has_mask():
-            grass_mask = self.read_raster_map('MASK')
-            return ~np.isclose(grass_mask, 1.)
-        else:
-            return np.full(shape=(self.yr, self.xr), fill_value=False, dtype=np.bool_)
-
-    def set_temp_mask(self):
-        """If a mask is already set, keep it for later.
-        Set a new mask.
-        """
-        has_old_mask = self.has_mask()
-        if has_old_mask:
-            # Save the current MASK under a temp name
-            self.old_mask_name = "itzi_old_MASK_{}".format(os.getpid())
-            gscript.run_command("g.rename", quiet=True, overwrite=True,
-                                raster=f"MASK,{self.old_mask_name}")
-        gscript.run_command("r.mask", quiet=True, raster=self.raster_mask_id)
-        assert self.has_mask()
-        return self
-
-    def del_temp_mask(self):
-        """Reset the old mask, remove if there was not.
-        """
-        if self.old_mask_name is not None:
-            gscript.run_command("g.rename", quiet=True, overwrite=True,
-                                raster=f"{self.old_mask_name},MASK")
-        else:
-            gscript.run_command("r.mask", quiet=True, flags='r')
-        return self
 
     def coor2pixel(self, coor):
         """convert coordinates easting and northing to pixel row and column
@@ -322,7 +245,7 @@ class Igis():
         if strds.get_temporal_type() == 'relative':
             # get start time and end time in seconds
             rel_end_time = (self.end_time - self.start_time).total_seconds()
-            rel_unit = strds.get_relative_time_unit()
+            rel_unit = strds.get_relative_time_unit().encode('ascii', 'ignore')
             start_time_in_stds_unit = 0
             end_time_in_stds_unit = self.from_s(rel_unit, rel_end_time)
         elif strds.get_temporal_type() == 'absolute':
@@ -344,7 +267,7 @@ class Igis():
         each map is stored as a MapData namedtuple
         store result in instance's dictionary
         """
-        for k, map_name in map_names.items():
+        for k, map_name in map_names.iteritems():
             if not map_name:
                 map_list = None
                 continue
@@ -396,7 +319,8 @@ class Igis():
         for all the simulation duration
         Each map data is stored as a MapData namedtuple
         """
-        assert isinstance(strds_name, str), u"expect a string"
+        # print(strds_name)
+        # assert isinstance(strds_name, str), u"expect a string"
 
         # transform simulation start and end time in strds unit
         strds = tgis.open_stds.open_old_stds(strds_name, 'strds')
@@ -416,41 +340,51 @@ class Igis():
             msgr.fatal(err_msg.format(strds_name, str_lst))
         # change time data to datetime format
         if strds.get_temporal_type() == 'relative':
-            rel_unit = strds.get_relative_time_unit()
+            rel_unit = strds.get_relative_time_unit().encode('ascii', 'ignore')
             maplist = [(i[0], self.to_datetime(rel_unit, i[1]),
                         self.to_datetime(rel_unit, i[2])) for i in maplist]
         return [self.MapData(*i) for i in maplist]
 
-    def read_raster_map(self, rast_name):
+    def read_raster_map(self,rast_name):
         """Read a GRASS raster and return a numpy array
         """
-        self.raster_lock.acquire()
-        with raster.RasterRow(rast_name, mode='r') as rast:
-            array = np.array(rast, dtype=self.dtype)
-        self.raster_lock.release()
-        return array
+        # print(rast_name)
+        # self.raster = RasterRow(rast_name)
+        # self.raster.open('r')
+        # with self.raster:
+            # arr = np.empty([self.raster.info.rows, self.raster.info.cols], dtype=self.dtype)
+            # i = 0
+            # for row in self.raster:
+              # arr[i,:] = row
+              # i = i+1
+        # return copy.deepcopy(arr)
+        # self.raster.close()
+        # del self.raster
+        # del arr
+        # del row
+        # """Read a GRASS raster and return a numpy array
+        # """
+
+        # self.raster = RasterRow(rast_name)
+        # self.raster.open('r')
+        # with self.raster:
+            # arr = np.array(self.raster, dtype=self.dtype, copy=False)
+        # return copy.deepcopy(arr)
+
+        # self.raster.close()
+        # del self.raster
+        # del arr
+        # gc.collect()
+        arr = garray.array()
+        arr.read(rast_name, null = np.nan)
+        return arr.astype(self.dtype)
 
     def write_raster_map(self, arr, rast_name, mkey):
         """Take a numpy array and write it to GRASS DB
         """
         assert isinstance(arr, np.ndarray), u"arr not a np array!"
         assert isinstance(rast_name, str), u"not a string!"
-        assert isinstance(mkey, str), u"not a string!"
-        # self.write_raster_map_blocking(arr, rast_name, mkey)
-        self.write_raster_map_nonblocking(arr, rast_name, mkey)
-        return self
-
-    def write_raster_map_nonblocking(self, arr, rast_name, mkey):
         mtype = self.grass_dtype(arr.dtype)
-        assert isinstance(mtype, str), u"not a string!"
-        q_obj = (arr.copy(), copy.deepcopy(rast_name), copy.deepcopy(mtype),
-                 copy.deepcopy(mkey), self.overwrite)
-        self.raster_writer_queue.put(q_obj)
-        return self
-
-    def write_raster_map_blocking(self, arr, rast_name, mkey):
-        mtype = self.grass_dtype(arr.dtype)
-        assert isinstance(mtype, str), u"not a string!"
         with raster.RasterRow(rast_name, mode='w', mtype=mtype,
                               overwrite=self.overwrite) as newraster:
             newrow = raster.Buffer((arr.shape[1],), mtype=mtype)
@@ -458,14 +392,14 @@ class Igis():
                 newrow[:] = row[:]
                 newraster.put_row(newrow)
         # apply color table
-        apply_color_table(rast_name, mkey)
+        self.apply_color_table(rast_name, mkey)
         return self
 
     def create_db_links(self, vect_map, linking_elem):
         """vect_map an open vector map
         """
         dblinks = {}
-        for layer_name, layer_dscr in linking_elem.items():
+        for layer_name, layer_dscr in linking_elem.iteritems():
             # Create DB links
             dblink = Link(layer=layer_dscr.layer_number, name=layer_name,
                           table=vect_map.name + layer_dscr.table_suffix, key='cat')
@@ -527,7 +461,7 @@ class Igis():
                     cat_num += 1
 
         # write DB
-        for geom_type, attrs in db_info.items():
+        for geom_type, attrs in db_info.iteritems():
             map_layer, dbtable = dblinks[geom_type]
             for attr in attrs:
                 dbtable.insert(attr)
@@ -555,13 +489,18 @@ class Igis():
         if self.maps[mkey] is None:
             return None, self.start_time, self.end_time
         else:
+
             for m in self.maps[mkey]:
-                if m.start_time <= sim_time <= m.end_time:
+
+                if m.start_time <= sim_time < m.end_time:
+
                     arr = self.read_raster_map(m.id)
                     return arr, m.start_time, m.end_time
+
             else:
                 assert None, "No map found for {k} at time {t}".format(
                     k=mkey, t=sim_time)
+
 
     def register_maps_in_stds(self, stds_title, stds_name, map_list, stds_type, t_type):
         """Create a STDS, create one mapdataset for each map and
@@ -583,8 +522,10 @@ class Igis():
         # create MapDataset objects list
         map_dts_lst = []
         for map_name, map_time in map_list:
+
             # create MapDataset
             map_id = self.format_id(map_name)
+            msgr.message(map_id)
             map_dts_type = {'strds': tgis.RasterDataset,
                             'stvds': tgis.VectorDataset}
             map_dts = map_dts_type[stds_type](map_id)
@@ -601,12 +542,26 @@ class Igis():
                 assert False, "unknown temporal type!"
             # populate the list
             map_dts_lst.append(map_dts)
+
         # Finally register the maps
         t_unit = {'relative': 'seconds', 'absolute': ''}
         stds_corresp = {'strds': 'raster', 'stvds': 'vector'}
-        del_empty = {'strds': True, 'stvds': False}
+        del_empty = {'strds': True, 'stvds': True}
+
         tgis.register.register_map_object_list(stds_corresp[stds_type],
                                                map_dts_lst, stds,
                                                delete_empty=del_empty[stds_type],
                                                unit=t_unit[t_type])
+        return self
+
+    def apply_color_table(self, map_name, mkey):
+        '''apply a color table determined by mkey to the given map
+        '''
+        try:
+            colors_rules = self.colors_rules_dict[mkey]
+            gscript.run_command('r.colors', quiet=True,
+                                rules=colors_rules, map=map_name)
+        except KeyError:
+            # in case no specific color table is given, use GRASS default.
+            pass
         return self

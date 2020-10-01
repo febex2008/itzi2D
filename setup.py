@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
 import sys
@@ -12,7 +12,8 @@ try:
     import numpy as np
 except ImportError:
     sys.exit("Error: NumPy not found")
-
+    from distutils.core import setup
+    from distutils.extension import Extension
 
 SWMM_SOURCE = 'itzi/swmm/source/'
 
@@ -52,15 +53,14 @@ CLASSIFIERS = ["Development Status :: 4 - Beta",
                "Operating System :: OS Independent",
                "Programming Language :: Cython",
                "Programming Language :: Python",
-               "Programming Language :: Python :: 3.7",
-               "Programming Language :: Python :: 3.8",
+               "Programming Language :: Python :: 2.7",
                "Topic :: Scientific/Engineering"]
 
 
 DESCR = "A 2D flood model using GRASS GIS as a back-end"
 
 
-REQUIRES = ['pyinstrument', 'networkx == 1.11', 'grass-session']
+REQUIRES = ['pyinstrument', 'networkx == 1.11', 'six']
 
 
 # Set arguments according to compiler
@@ -90,7 +90,7 @@ ext_flow = Extension('itzi.flow', sources=['itzi/flow.c'],
 
 # swmm Cython interface
 ext_iswmm = Extension('itzi.swmm.swmm_c', sources=['itzi/swmm/swmm_c.c'] + swmm_get_source(),
-                      include_dirs=[np.get_include()] + swmm_get_source(),
+                      include_dirs=[np.get_include()] + swmm_get_source() ,
                       library_dirs=[SWMM_SOURCE])
 
 

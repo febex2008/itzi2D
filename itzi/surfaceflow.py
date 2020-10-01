@@ -23,7 +23,7 @@ import itzi.flow as flow
 from itzi.itzi_error import NullError, DtError
 
 
-class SurfaceFlowSimulation():
+class SurfaceFlowSimulation(object):
     """Surface flow simulation on staggered raster grid
     Accessed through step() methods
     By convention the flow is:
@@ -94,21 +94,7 @@ class SurfaceFlowSimulation():
         flow.flow_dir(arr_max_dz[self.s_i_0], dW, dE, self.dom.get('dire'))
         return self
 
-    def step(self):
-        """Run a full simulation time-step
-        """
-        start_time = time.time()
-        self.solve_q()
-        self.apply_boundary_conditions()
-        self.update_h()
-        # in case of NaN/NULL cells, raise a NullError
-        self.arr_err = np.isnan(self.dom.get('h'))
-        if np.any(self.arr_err):
-            raise NullError
-        self.swap_flow_arrays()
-        end_time = time.time()
-        step_duration = end_time - start_time
-        return self
+
 
     def solve_dt(self):
         """Calculate the adaptative time-step
@@ -116,10 +102,11 @@ class SurfaceFlowSimulation():
         accomodate non-square cells
         The time-step is limited by the maximum time-step dtmax.
         """
-        maxh = self.dom.amax('h')  # max depth in domain
+
+        maxv = self.dom.amax('celerity')  # max celerity in domain
         min_dim = min(self.dx, self.dy)
-        if maxh > 0:
-            dt = self.cfl * (min_dim / (math.sqrt(self.g * maxh)))
+        if maxv > 0:
+            dt = self.cfl * min_dim /maxv
             self._dt = min(self.dtmax, dt)
         else:
             self._dt = self.dtmax
@@ -174,6 +161,7 @@ class SurfaceFlowSimulation():
                      arr_v=self.dom.get('v'), arr_vdir=self.dom.get('vdir'),
                      arr_vmax=self.dom.get('vmax'),
                      arr_fr=self.dom.get('fr'),
+                     arr_celerity = self.dom.get('celerity'),
                      dx=self.dx, dy=self.dy, dt=self._dt, g=self.g)
         assert not np.any(self.dom.get('h') < 0)
         return self
@@ -191,6 +179,8 @@ class SurfaceFlowSimulation():
                      arr_hfs=self.dom.get('hfs'),
                      arr_qe_new=self.dom.get('qe_new'),
                      arr_qs_new=self.dom.get('qs_new'),
+                     arr_bct = self.dom.get('bct'),
+                     arr_bcv = self.dom.get('bcv'),
                      dt=self._dt, dx=self.dx, dy=self.dy, g=self.g,
                      theta=self.theta, hf_min=self.hf_min,
                      v_rout=self.v_routing, sl_thres=self.sl_thresh)
