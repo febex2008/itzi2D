@@ -1,6 +1,6 @@
 # coding=utf8
 """
-Copyright (C) 2015-2020 Laurent Courty
+Copyright (C) 2015-2017 Laurent Courty
 
 This program is free software; you can redistribute it and/or
 modify it under the terms of the GNU General Public License
@@ -16,19 +16,19 @@ GNU General Public License for more details.
 
 from __future__ import division
 from __future__ import absolute_import
-from configparser import ConfigParser
+import os
+from six.moves.configparser import ConfigParser
 from datetime import datetime, timedelta
+import numpy as np
 
 import itzi.messenger as msgr
 from itzi.const import DefaultValues
 
 
-class ConfigReader():
+class ConfigReader(object):
     """Parse the configuration file and check validity of given options
     """
     def __init__(self, filename):
-        if filename is None:
-            msgr.fatal('Not a valid configuration file')
         self.config_file = filename
         # default values to be passed to simulation
         self.__set_defaults()
@@ -39,16 +39,16 @@ class ConfigReader():
         """Set dictionaries of default values to be passed to simulation"""
         k_raw_input_times = ['start_time', 'end_time',
                              'duration', 'record_step']
-        self.ga_list = ['effective_porosity', 'capillary_pressure',
+        self.ga_list = ['effective_pororosity', 'capillary_pressure',
                         'hydraulic_conductivity']
         k_input_map_names = ['dem', 'friction', 'start_h', 'start_y',
                              'rain', 'inflow', 'bcval', 'bctype',
-                             'infiltration', 'losses'] + self.ga_list
+                             'infiltration', 'losses', 'init_losses'] + self.ga_list
         k_output_map_names = ['h', 'wse', 'v', 'vdir', 'qx', 'qy', 'fr',
                               'boundaries', 'infiltration', 'rainfall',
-                              'inflow', 'losses', 'drainage_stats',
+                              'inflow', 'losses', 'drainage_stats', 'init_losses',
                               'verror']
-        self.drainage_params = {'swmm_inp': None, 'output': None,
+        self.drainage_params = {'swmm_inp': None, 'output': None, 'swmm_gage': None,
                                 'orifice_coeff': DefaultValues.ORIFICE_COEFF,
                                 'free_weir_coeff': DefaultValues.FREE_WEIR_COEFF,
                                 'submerged_weir_coeff': DefaultValues.SUBMERGED_WEIR_COEFF}
@@ -57,13 +57,13 @@ class ConfigReader():
                           'vrouting': DefaultValues.VROUTING, 'dtmax': DefaultValues.DTMAX,
                           'slmax': DefaultValues.SLMAX, 'dtinf': DefaultValues.DTINF,
                           'inf_model': None}
-        self.grass_mandatory = ['grassdata', 'location', 'mapset']
-        k_grass_params = self.grass_mandatory + ['region', 'mask', 'grass_bin']
+        self.grass_mandatory = ['grass_bin', 'grassdata', 'location', 'mapset']
+        k_grass_params = self.grass_mandatory + ['region', 'mask']
         self.raw_input_times = dict.fromkeys(k_raw_input_times)
         self.output_map_names = dict.fromkeys(k_output_map_names)
         self.input_map_names = dict.fromkeys(k_input_map_names)
         self.grass_params = dict.fromkeys(k_grass_params)
-        self.out_prefix = f"itzi_results_{datetime.now().strftime('%Y%m%dT%H%M%S')}"
+        self.out_prefix = 'itzi_results_{}'.format(datetime.now().strftime('%Y%m%dT%H%M%S'))
         self.stats_file = None
         return self
 
@@ -109,10 +109,6 @@ class ConfigReader():
             msgr.warning(u"'drainage_capacity' is deprecated. "
                          u"Use 'losses' instead.")
             self.input_map_names['losses'] = params.get('input', "drainage_capacity")
-        if params.has_option('input', "effective_pororosity"):
-            msgr.warning(u"'effective_pororosity' is deprecated. "
-                         u"Use 'effective_porosity' instead.")
-            self.input_map_names['effective_porosity'] = params.get('input', "effective_pororosity")
         # search for valid inputs
         for k in self.input_map_names:
             if params.has_option('input', k):
@@ -121,7 +117,7 @@ class ConfigReader():
         # drainage parameters
         for k in self.drainage_params:
             if params.has_option('drainage', k):
-                if k in ['swmm_inp', 'output']:
+                if k in ['swmm_inp', 'output', 'swmm_gage']:
                     self.drainage_params[k] = params.get('drainage', k)
                 else:
                     self.drainage_params[k] = params.getfloat('drainage', k)
@@ -235,7 +231,7 @@ class ConfigReader():
         msgr.verbose(u"{}".format(inter_txt))
 
 
-class SimulationTimes():
+class SimulationTimes(object):
     """Store the information about simulation start & end time and duration
     """
     def __init__(self, raw_input_times):
@@ -284,7 +280,8 @@ class SimulationTimes():
         data = inp_str.split(":")
         hours = int(data[0])
         minutes = int(data[1])
-        seconds = int(data[2])
+        seconds = float(data[2])
+        print(seconds)
         if hours < 0:
             raise ValueError
         if not 0 <= minutes <= 59 or not 0 <= seconds <= 59:
@@ -339,9 +336,11 @@ class SimulationTimes():
         If string is None, return None
         """
         if string:
+            print(string)
             try:
                 return datetime.strptime(string, self.date_format)
             except ValueError:
+
                 msgr.fatal(self.abs_err_msg.format(string))
         else:
             return None

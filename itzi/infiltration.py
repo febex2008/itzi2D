@@ -1,6 +1,6 @@
 # coding=utf8
 """
-Copyright (C) 2016-2020  Laurent Courty
+Copyright (C) 2016  Laurent Courty
 
 This program is free software; you can redistribute it and/or
 modify it under the terms of the GNU General Public License
@@ -22,7 +22,7 @@ import itzi.flow as flow
 from itzi.itzi_error import DtError
 
 
-class Infiltration():
+class Infiltration(object):
     """Base class for Infiltration
     infiltration is calculated in mm/h
     """
@@ -60,11 +60,14 @@ class InfConstantRate(Infiltration):
     rate given by a raster map or serie of maps.
     """
     def step(self):
-        """Update infiltration rate map in m/s
+        """Update infiltration rate map in mm/h
         """
-        flow.inf_user(arr_h=self.dom.get_array('h'),
-                      arr_inf_in=self.dom.get_array('in_inf'),
-                      arr_inf_out=self.dom.get_array('inf'),
+        flow.inf_user(arr_h=self.dom.get('h'),
+                      arr_inf_in=self.dom.get('in_inf'),
+                      arr_inf_out=self.dom.get('inf'),
+                      arr_rain = self.dom.get('rain'), 
+                      arr_losses = self.dom.get('capped_losses'),
+                      arr_cum_init_losses = self.dom.get('cum_init_losses'),
                       dt=self._dt)
         return self
 
@@ -74,21 +77,28 @@ class InfGreenAmpt(Infiltration):
     """
     def __init__(self, raster_domain, dt_inf):
         Infiltration.__init__(self, raster_domain, dt_inf)
-        # Initial cumulative infiltration set to tiny value
+        # Initial water soil content set to zero
+        self.init_wat_soil_content = np.zeros(shape=self.dom.shape,
+                                              dtype=self.dom.dtype)
+        # Initial cumulative infiltration set to one mm
         # (prevent division by zero)
-        self.infiltration_amount = np.full(shape=self.dom.shape, fill_value=(1/1000),
+        self.infiltration_amount = np.ones(shape=self.dom.shape,
                                            dtype=self.dom.dtype)
 
     def step(self):
-        """update infiltration rate map in m/s.
+        """update infiltration rate map in mm/h.
         """
-        flow.inf_ga(arr_h=self.dom.get_array('h'),
-                    arr_eff_por=self.dom.get_array('effective_porosity'),
-                    arr_pressure=self.dom.get_array('capillary_pressure'),
-                    arr_conduct=self.dom.get_array('hydraulic_conductivity'),
+        flow.inf_ga(arr_h=self.dom.get('h'),
+                    arr_eff_por=self.dom.get('por'),
+                    arr_pressure=self.dom.get('pres'),
+                    arr_conduct=self.dom.get('con'),
                     arr_inf_amount=self.infiltration_amount,
-                    arr_water_soil_content=self.dom.get_array('soil_water_content'),
-                    arr_inf_out=self.dom.get_array('inf'), dt=self._dt)
+                    arr_water_soil_content=self.init_wat_soil_content,
+                    arr_inf_out=self.dom.get('inf'), 
+                    arr_rain = self.dom.get('rain'), 
+                    arr_losses = self.dom.get('capped_losses'),
+                    arr_cum_init_losses = self.dom.get('cum_init_losses'),
+                    dt=self._dt)
         return self
 
 
